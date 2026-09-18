@@ -1,33 +1,40 @@
 import random
 import asyncio
+import os
+from pathlib import Path
+
 import discord
 from discord.ext import commands, tasks
-import os
 from dotenv import load_dotenv
 
-load_dotenv()
+from wordfreq import top_n_list
+
+# Load environment variables explicitly from the script's directory
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=env_path)
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+# Setup bot intents
 intents = discord.Intents.default()
-intents.message_content = True  # Required to read channel messages for answers
+intents.message_content = True  # Required to read chat messages for answers
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+# Initialized bot with '#' and '/' prefixes
+bot = commands.Bot(command_prefix=["#", "/"], intents=intents)
 
 CHANNEL_ID = 1523280307204128868
 
-# Track active question state and user scores
-active_question = None  # Holds dict: {"answer": int, "type": str}
+# Tracking states
+active_question = None  # Holds dict: {"answer": str, "prompt": str}
 user_scores = {}        # Stores user_id: score
 
-@bot.command()
-async def test(ctx):
-    prompt, answer = generate_arithmetic_question()
-    global active_question
-    active_question = {"answer": answer, "prompt": prompt}
-    await ctx.send(f"🧪 **Test Question:** (Answer: `{answer}`)\n{prompt}")
+ANAGRAM_WORDS = [
+    w.lower() for w in top_n_list('en', 10000)
+    if 3 <= len(w) <= 10 and w.isalpha()
+]
+
 
 def generate_arithmetic_question():
-    """Generates one of four arithmetic questions and returns (prompt_string, correct_answer)."""
+    """Generates one of four arithmetic questions and returns (prompt, correct_answer)."""
     op = random.choice(["multiplication", "division", "addition", "subtraction"])
 
     if op == "multiplication":
@@ -39,7 +46,6 @@ def generate_arithmetic_question():
         a = random.randint(2, 99)
         b = random.randint(2, 99)
         product = a * b
-        # Displays (a * b) / b so the answer is always a
         return f"Solve: **{product} ÷ {b}**", a
 
     elif op == "addition":
@@ -50,22 +56,55 @@ def generate_arithmetic_question():
     elif op == "subtraction":
         a = random.randint(1, 9999)
         b = random.randint(1, 9999)
-        # Ensure no negative numbers
         high, low = max(a, b), min(a, b)
         return f"Solve: **{high} - {low}**", high - low
+
+
+def generate_anagram_question():
+    """Selects a word, shuffles its letters, and returns (prompt, original_word)."""
+    word = random.choice(ANAGRAM_WORDS).lower()
+    letters = list(word)
+
+    scrambled = "".join(letters)
+    while scrambled == word and len(word) > 1:
+        random.shuffle(letters)
+        scrambled = "".join(letters)
+
+    return f"Unscramble the word: **{scrambled.lower()}**", word
+
+
+def generate_question():
+    """Randomly chooses between a math problem or an anagram challenge."""
+    question_type = random.choice(["math", "anagram"])
+    if question_type == "math":
+        return generate_arithmetic_question()
+    else:
+        return generate_anagram_question()
 
 
 @tasks.loop(hours=1)
 async def hourly_question_check():
     global active_question
 
-    # 66% chance to trigger
+    channel = bot.get_channel(CHANNEL_ID)
+    if not channel:
+        return
+
+    # 1. Clear unanswered question from previous hour
+    if active_question is not None:
+        await channel.send(
+            f"⏰ **Time's up!** Nobody guessed the correct answer in time.\n"
+            f"The correct answer was: **{active_question['answer']}**"
+        )
+        active_question = None
+
+    # 2. 66% chance to spawn a new question
     if random.random() < 0.66:
-        channel = bot.get_channel(CHANNEL_ID)
-        if channel:
-            prompt, answer = generate_arithmetic_question()
-            active_question = {"answer": answer, "prompt": prompt}
-            await channel.send(f"🎲 **Speed Math Challenge!** (First to answer gets 10 points)\n{prompt}")
+        prompt, answer = generate_question()
+        active_question = {"answer": str(answer).lower(), "prompt": prompt}
+        await channel.send(
+            f"{prompt} \n (First to answer gets 10 points)"
+        )
 
 
 @hourly_question_check.before_loop
@@ -84,36 +123,74 @@ async def on_ready():
 async def on_message(message):
     global active_question
 
-    # Ignore messages sent by the bot itself
+    # Ignore messages sent by bots
     if message.author.bot:
         return
 
-    # Process correct answers if a question is active in the designated channel
+    # Process answer attempts in target channel
     if active_question and message.channel.id == CHANNEL_ID:
-        try:
-            user_answer = int(message.content.strip())
-            if user_answer == active_question["answer"]:
-                user_id = message.author.id
-                user_scores[user_id] = user_scores.get(user_id, 0) + 10
-                
-                await message.channel.send(
-                    f"🎉 {message.author.mention} got it right! The answer was **{active_question['answer']}** (+10 points).\n"
-                    f"Total points: **{user_scores[user_id]}**"
-                )
-                # Clear active question so no one else can claim points for it
-                active_question = None
-        except ValueError:
-            # Message wasn't a valid integer, ignore it
-            pass
+        user_guess = message.content.strip().lower()
 
+        if user_guess == active_question["answer"]:
+            user_id = message.author.id
+            user_scores[user_id] = user_scores.get(user_id, 0) + 10
+
+            await message.channel.send(
+                f"🎉 {message.author.mention} got it right! The answer was **{active_question['answer']}** (+10 points).\n"
+                f"Total points: **{user_scores[user_id]}**"
+            )
+            # Reset active question once answered
+            active_question = None
+
+    # Process bot commands
     await bot.process_commands(message)
 
 
-# Command to check current leaderboard scores
+# Command to force-trigger a test question
+@bot.command()
+async def test(ctx):
+    global active_question
+    prompt, answer = generate_question()
+    active_question = {"answer": str(answer).lower(), "prompt": prompt}
+    await ctx.send(f"**Test Question:** (Answer: `{answer}`)\n{prompt}")
+
+
+# Command to check individual user points
 @bot.command()
 async def points(ctx):
     score = user_scores.get(ctx.author.id, 0)
     await ctx.send(f"{ctx.author.mention}, you currently have **{score}** points!")
+
+
+# Command to display the top scores
+@bot.command(aliases=["lb"])
+async def leaderboard(ctx):
+    if not user_scores:
+        await ctx.send("📊 The leaderboard is currently empty! Answer a question to get on the board.")
+        return
+
+    sorted_scores = sorted(user_scores.items(), key=lambda item: item[1], reverse=True)
+
+    embed = discord.Embed(
+        title="🏆 QuizBot Leaderboard",
+        color=discord.Color.gold()
+    )
+
+    description = ""
+    for rank, (user_id, score) in enumerate(sorted_scores, start=1):
+        if rank == 1:
+            medal = "🥇"
+        elif rank == 2:
+            medal = "🥈"
+        elif rank == 3:
+            medal = "🥉"
+        else:
+            medal = f"**#{rank}**"
+
+        description += f"{medal} <@{user_id}> — **{score}** points\n"
+
+    embed.description = description
+    await ctx.send(embed=embed)
 
 
 bot.run(TOKEN)
