@@ -25,7 +25,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="#", intents=intents)
+bot = commands.Bot(command_prefix="/", intents=intents)
 
 CHANNEL_ID = 1523280307204128868
 NZ_TZ = ZoneInfo("Pacific/Auckland")
@@ -431,14 +431,14 @@ class LeaderboardView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 @bot.command(aliases=["lb"])
-async def leaderboard(ctx):
+async def scoreboard(ctx):
     users = score_data["users"]
     if not users:
         await ctx.send("📊 The leaderboard is currently empty!")
         return
 
     embed = discord.Embed(
-        title="📊 QuizBot Leaderboards",
+        title="📊 Quiz Leaderboards",
         description="Select an option below to view either the current month's points or past monthly wins!",
         color=discord.Color.blue()
     )
