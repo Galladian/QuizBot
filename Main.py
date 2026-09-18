@@ -291,7 +291,6 @@ async def on_ready():
 async def setup_hook():
     # Registers slash commands globally (can take a few minutes to show up across Discord)
     await bot.tree.sync()
-    print("Synced slash commands!")
 
 @bot.event
 async def on_message(message):
@@ -384,14 +383,53 @@ async def test(interaction: discord.Interaction, question_type: str = None):
 @bot.tree.command(name="points", description="Check your current quiz points")
 async def points(interaction: discord.Interaction):
     users = score_data["users"]
-    user_record = users.get(interaction.user.id, {"score": 0})
-    score = user_record["score"] if isinstance(user_record, dict) else user_record
+    user_record = users.get(interaction.user.id, {"score": 0, "monthly_wins": 0})
     
-    # Use interaction.response.send_message instead of ctx.send
-    await interaction.response.send_message(
-        f"{interaction.user.mention}, you currently have **{score}** points!"
+    # Handle integer fallback if user data was recorded prior to the JSON dictionary update
+    if isinstance(user_record, int):
+        score = user_record
+        wins = 0
+    else:
+        score = user_record.get("score", 0)
+        wins = user_record.get("monthly_wins", 0)
+
+    embed = discord.Embed(
+        title=f"🏆 {interaction.user.display_name}'s Stats",
+        color=discord.Color.gold()
+    )
+    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    embed.add_field(name="Current Points", value=f"**{score}** pts", inline=True)
+    embed.add_field(name="Monthly Titles", value=f"**{wins}** 👑", inline=True)
+
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="info", description="Learn how the bot actually works")
+async def info(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="ℹ️ QuizBot Help & Overview",
+        description="Welcome! Here is a breakdown of how challenges and scoring work:",
+        color=discord.Color.teal()
     )
 
+    embed.add_field(
+        name="⏱️ Hourly Challenges",
+        value="Every hour, there's a 66% chance to spawn a Math or Anagram challenge. First correct guess wins **10 points**!",
+        inline=False
+    )
+    embed.add_field(
+        name="🌟 Daily Trivia",
+        value="Posted every day at **9:00 AM NZT**. You have **3 hours** to guess correctly for **20 points**!",
+        inline=False
+    )
+    embed.add_field(
+        name="👑 Monthly Reset",
+        value="At midnight on the 1st of each month, the top player gets **+1 Monthly Win**, and current season scores reset to zero.",
+        inline=False
+    )
+    
+    embed.set_footer(text="Use /leaderboard to check standings or /points to check your score.")
+
+    await interaction.response.send_message(embed=embed)
 # ---------------------------------------------------------
 # Leaderboards
 # ---------------------------------------------------------
