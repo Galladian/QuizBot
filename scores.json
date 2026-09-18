@@ -1,6 +1,10 @@
 {
-    "659236619815092227": {
-        "name": "cookie5962",
-        "score": 30
+    "last_reset_month": 9,
+    "users": {
+        "659236619815092227": {
+            "name": "cookie5962",
+            "score": 10,
+            "monthly_wins": 0
+        }
     }
 }

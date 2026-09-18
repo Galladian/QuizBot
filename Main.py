@@ -1,74 +1,77 @@
+# ---------------------------------------------------------
+# IMPORTS
+# ---------------------------------------------------------
 import random
 import asyncio
 import os
+import html
 import json
 from pathlib import Path
+from datetime import time, datetime
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
-
-from wordfreq import top_n_list
-import html
 import aiohttp
+from wordfreq import top_n_list
 
-from datetime import time
-from zoneinfo import ZoneInfo
-
-def load_scores():
-    """Loads scores from scores.json on startup."""
-    if os.path.exists(SCORES_FILE):
-        try:
-            with open(SCORES_FILE, "r") as f:
-                data = json.load(f)
-                # Convert string keys from JSON back to integer Discord IDs
-                return {int(k): v for k, v in data.items()}
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-def save_scores():
-    """Saves current scores dictionary to scores.json."""
-    with open(SCORES_FILE, "w") as f:
-        # Convert integer keys to strings for valid JSON encoding
-        json.dump({str(k): v for k, v in user_scores.items()}, f, indent=4)
-
-# ---------------------------------------------------------
-# SETUP
-# ---------------------------------------------------------
-
-# Import settings
-NZ_TZ = ZoneInfo("Pacific/Auckland")
-hourly_times = [time(hour=h, minute=0, tzinfo=NZ_TZ) for h in range(24)]
-daily_time = time(hour=9, minute=0, tzinfo=NZ_TZ)
-
-ANAGRAM_WORDS = [
-    w.lower() for w in top_n_list('en', 10000)
-    if 3 <= len(w) <= 10 and w.isalpha()
-]
-
-# Load environment variables explicitly from the script's directory
+# Load environment variables
 env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=env_path)
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-SCORES_FILE = "scores.json"
-
 # Setup bot intents
 intents = discord.Intents.default()
-intents.message_content = True  # Required to read chat messages for answers
+intents.message_content = True
 
-# Initialized bot with '#' and '/' prefixes
-bot = commands.Bot(command_prefix=["#", "/"], intents=intents)
+bot = commands.Bot(command_prefix="#", intents=intents)
 
 CHANNEL_ID = 1523280307204128868
+NZ_TZ = ZoneInfo("Pacific/Auckland")
+SCORES_FILE = "scores.json"
 
-# Tracking states
+# Load recognizable 4-8 letter words for anagrams
+ANAGRAM_WORDS = [
+    w for w in top_n_list('en', 10000)
+    if 3 <= len(w) <= 10 and w.isalpha()
+]
+
+hourly_times = [time(hour=h, minute=0, tzinfo=NZ_TZ) for h in range(24)]
+daily_time = time(hour=9, minute=0, tzinfo=NZ_TZ)
+# ---------------------------------------------------------
+# Global State & Persistence
+# ---------------------------------------------------------
 active_questions = {
     "hourly": None,
     "daily": None
-} 
-user_scores = load_scores() 
+}
+
+def load_scores():
+    """Loads overall data structure from scores.json."""
+    default_data = {"last_reset_month": datetime.now(NZ_TZ).month, "users": {}}
+    if os.path.exists(SCORES_FILE):
+        try:
+            with open(SCORES_FILE, "r") as f:
+                data = json.load(f)
+                # Convert JSON string keys back to integer Discord user IDs
+                data["users"] = {int(k): v for k, v in data.get("users", {}).items()}
+                return data
+        except json.JSONDecodeError:
+            return default_data
+    return default_data
+
+def save_scores():
+    """Saves global score_data to scores.json."""
+    data_to_save = {
+        "last_reset_month": score_data.get("last_reset_month", datetime.now(NZ_TZ).month),
+        "users": {str(k): v for k, v in score_data["users"].items()}
+    }
+    with open(SCORES_FILE, "w") as f:
+        json.dump(data_to_save, f, indent=4)
+
+score_data = load_scores()
+
 # ---------------------------------------------------------
 # Question generation
 # ---------------------------------------------------------
@@ -110,6 +113,28 @@ def generate_anagram_question():
 
     return f"Unscramble the word: **{scrambled.lower()}**", word
 
+def generate_question():
+    """Randomly chooses a question type and returns a styled discord.Embed and the answer string."""
+    question_type = random.choice(["math", "anagram"])
+    
+    if question_type == "math":
+        prompt, answer = generate_arithmetic_question()
+        title = "**Math Challenge**"
+        color = discord.Color.blue()
+    else:
+        prompt, answer = generate_anagram_question()
+        title = "**Anagram Challenge**"
+        color = discord.Color.purple()
+
+    # Create the boxed window (Embed)
+    embed = discord.Embed(
+        title=title,
+        description=f"{prompt}\n\n*First person to answer correctly wins **10 points**!*",
+        color=color
+    )
+    
+    return embed, str(answer).lower()
+
 async def generate_trivia_question():
     """Fetches a random trivia question from OpenTDB."""
     url = "https://opentdb.com/api.php?amount=1&type=multiple"
@@ -141,30 +166,8 @@ async def generate_trivia_question():
     )
     return embed, "paris"
 
-def generate_question():
-    """Randomly chooses a question type and returns a styled discord.Embed and the answer string."""
-    question_type = random.choice(["math", "anagram"])
-    
-    if question_type == "math":
-        prompt, answer = generate_arithmetic_question()
-        title = "**Math Challenge**"
-        color = discord.Color.blue()
-    else:
-        prompt, answer = generate_anagram_question()
-        title = "**Anagram Challenge**"
-        color = discord.Color.purple()
-
-    # Create the boxed window (Embed)
-    embed = discord.Embed(
-        title=title,
-        description=f"{prompt}\n\n*First person to answer correctly wins **10 points**!*",
-        color=color
-    )
-    
-    return embed, str(answer).lower()
-
 # ---------------------------------------------------------
-# Hourly Loop (Runs on the dot every hour, e.g., 1:00, 2:00)
+# Hourly Loop 
 # ---------------------------------------------------------
 @tasks.loop(time=hourly_times)
 async def hourly_question_check():
@@ -192,7 +195,7 @@ async def before_hourly_check():
     await bot.wait_until_ready()
 
 # ---------------------------------------------------------
-# Daily Loop (Runs at exactly 9:00 AM NZT every day)
+# Daily Loop 
 # ---------------------------------------------------------
 @tasks.loop(time=daily_time)
 async def daily_trivia_check():
@@ -226,7 +229,49 @@ async def before_daily_check():
     await bot.wait_until_ready()
 
 # ---------------------------------------------------------
-# BOT COMMANDS
+# Monthly loop
+# ---------------------------------------------------------
+@tasks.loop(hours=1)
+async def monthly_reset_check():
+    global score_data, user_scores
+    
+    now = datetime.now(NZ_TZ)
+    current_month = now.month
+    stored_month = score_data.get("last_reset_month", current_month)
+
+    # Trigger reset if a new month has arrived
+    if current_month != stored_month:
+        channel = bot.get_channel(CHANNEL_ID)
+
+        if user_scores:
+            # Find the top player with the highest current score
+            winner_id = max(user_scores, key=lambda u: user_scores[u].get("score", 0))
+            winner_data = user_scores[winner_id]
+
+            if winner_data.get("score", 0) > 0:
+                # Increment monthly wins counter
+                winner_data["monthly_wins"] = winner_data.get("monthly_wins", 0) + 1
+                
+                if channel:
+                    await channel.send(
+                        f"🎉 **MONTHLY RESET!** Congratulations to <@{winner_id}> for winning this month's leaderboard with "
+                        f"**{winner_data['score']}** points! They have gained **+1 Monthly Win**! 👑"
+                    )
+
+        # Reset all current season scores to 0
+        for uid in user_scores:
+            user_scores[uid]["score"] = 0
+
+        # Update last reset month and save to file
+        score_data["last_reset_month"] = current_month
+        save_scores()
+
+@monthly_reset_check.before_loop
+async def before_monthly_check():
+    await bot.wait_until_ready()
+
+# ---------------------------------------------------------
+# Bot events and commands
 # ---------------------------------------------------------
 @bot.event
 async def on_ready():
@@ -238,8 +283,13 @@ async def on_ready():
     if not daily_trivia_check.is_running():
         daily_trivia_check.start()
 
+    if not monthly_reset_check.is_running():
+        monthly_reset_check.start()
+
 @bot.event
 async def on_message(message):
+    global active_questions, score_data
+
     if message.author.bot:
         return
 
@@ -248,22 +298,22 @@ async def on_message(message):
 
         for q_type in ["daily", "hourly"]:
             q_data = active_questions.get(q_type)
-            
+
             if q_data and user_guess == q_data["answer"]:
                 user_id = message.author.id
                 points_awarded = q_data["points"]
-                
-                # Retrieve current score (supporting both old integer format and new dictionary format)
-                current_data = user_scores.get(user_id, {"name": str(message.author), "score": 0})
-                if isinstance(current_data, int):
-                    current_data = {"name": str(message.author), "score": current_data}
+                users = score_data["users"]
 
-                # Update score and display name
-                current_data["score"] += points_awarded
-                current_data["name"] = str(message.author)  # e.g., "andrew_dev"
+                # Get existing user dict or create default
+                user_record = users.get(user_id, {"name": str(message.author), "score": 0, "monthly_wins": 0})
+                if isinstance(user_record, int):
+                    user_record = {"name": str(message.author), "score": user_record, "monthly_wins": 0}
+
+                user_record["score"] = user_record.get("score", 0) + points_awarded
+                user_record["name"] = str(message.author)
                 
-                user_scores[user_id] = current_data
-                save_scores()  # Persist to JSON file
+                users[user_id] = user_record
+                save_scores()
 
                 await message.reply(
                     f"🎉 {message.author.mention} has received {points_awarded} points for the answer **{q_data['answer']}**!",
@@ -323,39 +373,76 @@ async def test(ctx, question_type: str = None):
 # Command to check individual user points
 @bot.command()
 async def points(ctx):
-    score = user_scores.get(ctx.author.id, 0)
+    users = score_data["users"]
+    user_record = users.get(ctx.author.id, {"score": 0})
+    score = user_record["score"] if isinstance(user_record, dict) else user_record
     await ctx.send(f"{ctx.author.mention}, you currently have **{score}** points!")
 
+# ---------------------------------------------------------
+# Leaderboards
+# ---------------------------------------------------------
+class LeaderboardView(discord.ui.View):
+    def __init__(self, user_scores):
+        super().__init__(timeout=60)
+        self.user_scores = user_scores
 
-# Command to display the top scores
+    @discord.ui.select(
+        placeholder="Choose a leaderboard to view...",
+        options=[
+            discord.SelectOption(label="Current Season Leaderboard", value="current", emoji="🏆"),
+            discord.SelectOption(label="Monthly Champions Leaderboard", value="monthly", emoji="👑"),
+        ]
+    )
+    async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        embed = discord.Embed(color=discord.Color.gold())
+        
+        if select.values[0] == "current":
+            embed.title = "🏆 Current Season Leaderboard"
+            sorted_users = sorted(
+                self.user_scores.items(),
+                key=lambda x: x[1].get("score", 0),
+                reverse=True
+            )
+            desc = ""
+            for rank, (user_id, data) in enumerate(sorted_users, start=1):
+                pts = data.get("score", 0)
+                if pts > 0:
+                    medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"**#{rank}**"
+                    desc += f"{medal} <@{user_id}> — **{pts}** pts\n"
+            
+            embed.description = desc if desc else "No points scored this month yet!"
+
+        else:
+            embed.title = "👑 Monthly Champions Leaderboard"
+            sorted_users = sorted(
+                self.user_scores.items(),
+                key=lambda x: x[1].get("monthly_wins", 0),
+                reverse=True
+            )
+            desc = ""
+            for rank, (user_id, data) in enumerate(sorted_users, start=1):
+                wins = data.get("monthly_wins", 0)
+                if wins > 0:
+                    medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"**#{rank}**"
+                    desc += f"{medal} <@{user_id}> — **{wins}** monthly win(s)\n"
+            
+            embed.description = desc if desc else "No monthly champions crowned yet!"
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
 @bot.command(aliases=["lb"])
 async def leaderboard(ctx):
-    if not user_scores:
-        await ctx.send("📊 The leaderboard is currently empty! Answer a question to get on the board.")
+    users = score_data["users"]
+    if not users:
+        await ctx.send("📊 The leaderboard is currently empty!")
         return
 
-    sorted_scores = sorted(user_scores.items(), key=lambda item: item[1], reverse=True)
-
     embed = discord.Embed(
-        title="🏆 QuizBot Leaderboard",
-        color=discord.Color.gold()
+        title="📊 QuizBot Leaderboards",
+        description="Select an option below to view either the current month's points or past monthly wins!",
+        color=discord.Color.blue()
     )
-
-    description = ""
-    for rank, (user_id, score) in enumerate(sorted_scores, start=1):
-        if rank == 1:
-            medal = "🥇"
-        elif rank == 2:
-            medal = "🥈"
-        elif rank == 3:
-            medal = "🥉"
-        else:
-            medal = f"**#{rank}**"
-
-        description += f"{medal} <@{user_id}> — **{score}** points\n"
-
-    embed.description = description
-    await ctx.send(embed=embed)
-
+    view = LeaderboardView(users)
+    await ctx.send(embed=embed, view=view)
 
 bot.run(TOKEN)
