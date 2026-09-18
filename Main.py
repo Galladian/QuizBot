@@ -2,6 +2,11 @@ import random
 import asyncio
 import discord
 from discord.ext import commands, tasks
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True  # Required to read channel messages for answers
@@ -14,6 +19,12 @@ CHANNEL_ID = 1523280307204128868
 active_question = None  # Holds dict: {"answer": int, "type": str}
 user_scores = {}        # Stores user_id: score
 
+@bot.command()
+async def test(ctx):
+    prompt, answer = generate_arithmetic_question()
+    global active_question
+    active_question = {"answer": answer, "prompt": prompt}
+    await ctx.send(f"🧪 **Test Question:** (Answer: `{answer}`)\n{prompt}")
 
 def generate_arithmetic_question():
     """Generates one of four arithmetic questions and returns (prompt_string, correct_answer)."""
@@ -105,4 +116,4 @@ async def points(ctx):
     await ctx.send(f"{ctx.author.mention}, you currently have **{score}** points!")
 
 
-bot.run("YOUR_DISCORD_BOT_TOKEN")
+bot.run(TOKEN)
