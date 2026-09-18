@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 # Import settings
 NZ_TZ = ZoneInfo("Pacific/Auckland")
 hourly_times = [time(hour=h, minute=0, tzinfo=NZ_TZ) for h in range(24)]
+daily_time = time(hour=9, minute=0, tzinfo=NZ_TZ)
 
 ANAGRAM_WORDS = [
     w.lower() for w in top_n_list('en', 10000)
@@ -42,8 +43,11 @@ bot = commands.Bot(command_prefix=["#", "/"], intents=intents)
 CHANNEL_ID = 1523280307204128868
 
 # Tracking states
-active_question = None  # Holds dict: {"answer": str, "prompt": str}
-user_scores = {}        # Stores user_id: score
+active_questions = {
+    "hourly": None,
+    "daily": None
+} 
+user_scores = {}   
 
 # ---------------------------------------------------------
 # Question generation
@@ -140,60 +144,61 @@ def generate_question():
     return embed, str(answer).lower()
 
 # ---------------------------------------------------------
-# 1Hourly Loop (Runs on the dot every hour, e.g., 1:00, 2:00)
+# Hourly Loop (Runs on the dot every hour, e.g., 1:00, 2:00)
 # ---------------------------------------------------------
-hourly_times = [time(hour=h, minute=0, tzinfo=NZ_TZ) for h in range(24)]
-
 @tasks.loop(time=hourly_times)
 async def hourly_question_check():
-    global active_question
-
+    global active_questions
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
 
-    # Clear previous unanswered question
-    if active_question is not None:
+    # Clear unanswered hourly question from the previous hour
+    if active_questions["hourly"] is not None:
         await channel.send(
-            f"⏰ **Time's up!** Nobody guessed the previous answer in time.\n"
-            f"The correct answer was: **{active_question['answer']}**"
+            f"⏰ **Time's up!** Nobody guessed the hourly answer in time.\n"
+            f"The correct answer was: **{active_questions['hourly']['answer']}**"
         )
-        active_question = None
+        active_questions["hourly"] = None
 
-    # 66% chance roll
+    # 66% chance to spawn a new hourly challenge (10 points)
     if random.random() < 0.66:
         embed, answer = generate_question()
-        active_question = {"answer": answer, "points": 10}
+        active_questions["hourly"] = {"answer": answer, "points": 10}
         await channel.send(embed=embed)
 
 @hourly_question_check.before_loop
 async def before_hourly_check():
     await bot.wait_until_ready()
 # ---------------------------------------------------------
-# 2Daily Loop (Runs at exactly 9:00 AM NZT every day)
+# Daily Loop (Runs at exactly 9:00 AM NZT every day)
 # ---------------------------------------------------------
-daily_time = time(hour=9, minute=0, tzinfo=NZ_TZ)
-
 @tasks.loop(time=daily_time)
 async def daily_trivia_check():
-    global active_question
-
+    global active_questions
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         return
 
-    # Clear previous unanswered question
-    if active_question is not None:
-        await channel.send(
-            f"⏰ **Time's up!** Nobody guessed the previous answer in time.\n"
-            f"The correct answer was: **{active_question['answer']}**"
-        )
-        active_question = None
+    # Clear previous unanswered daily question
+    if active_questions["daily"] is not None:
+        active_questions["daily"] = None
 
-    # Generate daily trivia worth 20 points
+    # Fetch daily trivia question (20 points)
     embed, answer = await generate_trivia_question()
-    active_question = {"answer": answer, "points": 20}
+    active_questions["daily"] = {"answer": answer, "points": 20}
     await channel.send(embed=embed)
+
+    # Wait 3 hours (10,800 seconds)
+    await asyncio.sleep(3 * 3600)
+
+    # Expire daily question after 3 hours if still active
+    if active_questions["daily"] is not None:
+        await channel.send(
+            f"⏰ **3 Hours Expired!** Time is up for today's Daily Trivia challenge.\n"
+            f"The correct answer was: **{active_questions['daily']['answer']}**"
+        )
+        active_questions["daily"] = None
 
 @daily_trivia_check.before_loop
 async def before_daily_check():
@@ -213,41 +218,78 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    global active_question
-
     if message.author.bot:
         return
 
-    if active_question and message.channel.id == CHANNEL_ID:
+    if message.channel.id == CHANNEL_ID:
         user_guess = message.content.strip().lower()
 
-        if user_guess == active_question["answer"]:
-            user_id = message.author.id
-            points_awarded = active_question.get("points", 10)  # Default to 10 if not set
-            user_scores[user_id] = user_scores.get(user_id, 0) + points_awarded
+        for q_type in ["daily", "hourly"]:
+            q_data = active_questions.get(q_type)
+            
+            if q_data and user_guess == q_data["answer"]:
+                user_id = message.author.id
+                points_awarded = q_data["points"]
+                user_scores[user_id] = user_scores.get(user_id, 0) + points_awarded
 
-            await message.reply(
-                f"🎉 {message.author.mention} has received {points_awarded} points for the answer **{active_question['answer']}**!",
-                mention_author=True
-            )
-            active_question = None
+                await message.reply(
+                    f"🎉 {message.author.mention} has received {points_awarded} points for the answer **{q_data['answer']}**!",
+                    mention_author=True
+                )
+                
+                active_questions[q_type] = None
+                break
 
     await bot.process_commands(message)
 
 # ---------------------------------------------------------
 # BOT COMMANDS
 # ---------------------------------------------------------
-
 # Command to force-trigger a test question
+# Usage: #test (random), #test math, #test anagram, or #test trivia
 @bot.command()
-async def test(ctx):
-    global active_question
-    embed, answer = generate_question()
-    active_question = {"answer": answer}
+async def test(ctx, question_type: str = None):
+    global active_questions
     
-    # Send as embed instead of raw text
-    await ctx.send(embed=embed)
+    # Normalize input
+    if question_type:
+        question_type = question_type.lower().strip()
 
+    # Determine question type
+    if question_type == "trivia":
+        embed, answer = await generate_trivia_question()
+        points = 20
+        target_slot = "daily"
+    elif question_type == "math":
+        prompt, ans = generate_arithmetic_question()
+        embed = discord.Embed(
+            title="🧮 Speed Math Challenge",
+            description=f"{prompt}\n\n*First person to answer correctly wins **10 points**!*",
+            color=discord.Color.blue()
+        )
+        answer = str(ans).lower()
+        points = 10
+        target_slot = "hourly"
+    elif question_type == "anagram":
+        embed, answer = generate_anagram_question()
+        points = 10
+        target_slot = "hourly"
+    else:
+        # Pick randomly if no specific type (or an invalid type) is provided
+        chosen_type = random.choice(["math", "anagram", "trivia"])
+        if chosen_type == "trivia":
+            embed, answer = await generate_trivia_question()
+            points = 20
+            target_slot = "daily"
+        else:
+            embed, answer = generate_question()
+            points = 10
+            target_slot = "hourly"
+
+    # Save to the active dictionary and notify in chat
+    active_questions[target_slot] = {"answer": str(answer).lower(), "points": points}
+    
+    await ctx.send(f"🧪 **Test Question Spawned (Slot: `{target_slot}`, Points: `{points}`)**", embed=embed)
 
 # Command to check individual user points
 @bot.command()
