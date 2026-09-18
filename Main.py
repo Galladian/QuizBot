@@ -1,6 +1,7 @@
 import random
 import asyncio
 import os
+import json
 from pathlib import Path
 
 import discord
@@ -13,6 +14,24 @@ import aiohttp
 
 from datetime import time
 from zoneinfo import ZoneInfo
+
+def load_scores():
+    """Loads scores from scores.json on startup."""
+    if os.path.exists(SCORES_FILE):
+        try:
+            with open(SCORES_FILE, "r") as f:
+                data = json.load(f)
+                # Convert string keys from JSON back to integer Discord IDs
+                return {int(k): v for k, v in data.items()}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+def save_scores():
+    """Saves current scores dictionary to scores.json."""
+    with open(SCORES_FILE, "w") as f:
+        # Convert integer keys to strings for valid JSON encoding
+        json.dump({str(k): v for k, v in user_scores.items()}, f, indent=4)
 
 # ---------------------------------------------------------
 # SETUP
@@ -33,6 +52,8 @@ env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=env_path)
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+SCORES_FILE = "scores.json"
+
 # Setup bot intents
 intents = discord.Intents.default()
 intents.message_content = True  # Required to read chat messages for answers
@@ -47,8 +68,7 @@ active_questions = {
     "hourly": None,
     "daily": None
 } 
-user_scores = {}   
-
+user_scores = load_scores() 
 # ---------------------------------------------------------
 # Question generation
 # ---------------------------------------------------------
@@ -170,6 +190,7 @@ async def hourly_question_check():
 @hourly_question_check.before_loop
 async def before_hourly_check():
     await bot.wait_until_ready()
+
 # ---------------------------------------------------------
 # Daily Loop (Runs at exactly 9:00 AM NZT every day)
 # ---------------------------------------------------------
@@ -203,8 +224,9 @@ async def daily_trivia_check():
 @daily_trivia_check.before_loop
 async def before_daily_check():
     await bot.wait_until_ready()
+
 # ---------------------------------------------------------
-# Start Both Loops in on_ready
+# BOT COMMANDS
 # ---------------------------------------------------------
 @bot.event
 async def on_ready():
@@ -230,21 +252,28 @@ async def on_message(message):
             if q_data and user_guess == q_data["answer"]:
                 user_id = message.author.id
                 points_awarded = q_data["points"]
-                user_scores[user_id] = user_scores.get(user_id, 0) + points_awarded
+                
+                # Retrieve current score (supporting both old integer format and new dictionary format)
+                current_data = user_scores.get(user_id, {"name": str(message.author), "score": 0})
+                if isinstance(current_data, int):
+                    current_data = {"name": str(message.author), "score": current_data}
+
+                # Update score and display name
+                current_data["score"] += points_awarded
+                current_data["name"] = str(message.author)  # e.g., "andrew_dev"
+                
+                user_scores[user_id] = current_data
+                save_scores()  # Persist to JSON file
 
                 await message.reply(
                     f"🎉 {message.author.mention} has received {points_awarded} points for the answer **{q_data['answer']}**!",
                     mention_author=True
                 )
-                
                 active_questions[q_type] = None
                 break
 
     await bot.process_commands(message)
 
-# ---------------------------------------------------------
-# BOT COMMANDS
-# ---------------------------------------------------------
 # Command to force-trigger a test question
 # Usage: #test (random), #test math, #test anagram, or #test trivia
 @bot.command()
