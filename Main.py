@@ -34,8 +34,8 @@ SCORES_FILE = "scores.json"
 
 # Load recognizable 4-8 letter words for anagrams
 ANAGRAM_WORDS = [
-    w for w in top_n_list('en', 10000)
-    if 3 <= len(w) <= 10 and w.isalpha()
+    w for w in top_n_list('en', 20000)
+    if 4 <= len(w) <= 10 and w.isalpha()
 ]
 
 hourly_times = [time(hour=h, minute=0, tzinfo=NZ_TZ) for h in range(24)]
@@ -177,19 +177,30 @@ async def hourly_question_check():
     if not channel:
         return
 
-    # Clear unanswered hourly question from the previous hour
+    # Clear previous unanswered hourly question
     if active_questions["hourly"] is not None:
-        await channel.send(
-            f"⏰ **Time's up!** Nobody guessed the hourly answer in time.\n"
-            f"The correct answer was: **{active_questions['hourly']['answer']}**"
-        )
         active_questions["hourly"] = None
 
-    # 66% chance to spawn a new hourly challenge (10 points)
-    if random.random() < 0.66:
+    # 67% chance to spawn a new hourly challenge (10 points)
+    if random.random() < 0.67:
         embed, answer = generate_question()
         active_questions["hourly"] = {"answer": answer, "points": 10}
         await channel.send(embed=embed)
+
+    # Clear unanswered hourly question after 30 minutes
+    await asyncio.sleep(1800) 
+
+    if active_questions["hourly"] is not None:
+        embed = discord.Embed(
+        title="⏰ Time's Up!",
+        description=(
+            f"Nobody guessed the hourly answer in time.\n\n"
+            f"The correct answer was: **{active_questions['hourly']['answer']}**"
+        ),
+        color=discord.Color.red()
+    )
+    await channel.send(embed=embed)
+    active_questions["hourly"] = None
 
 @hourly_question_check.before_loop
 async def before_hourly_check():
@@ -219,10 +230,15 @@ async def daily_trivia_check():
 
     # Expire daily question after 3 hours if still active
     if active_questions["daily"] is not None:
-        await channel.send(
-            f"⏰ **3 Hours Expired!** Time is up for today's Daily Trivia challenge.\n"
-            f"The correct answer was: **{active_questions['daily']['answer']}**"
+        embed = discord.Embed(
+            title="⏰ Time's Up!",
+            description=(
+                f"⏰ **3 Hours Expired!** Time is up for today's Daily Trivia challenge.\n"
+                f"The correct answer was: **{active_questions['daily']['answer']}**"
+            ),
+            color=discord.Color.red()
         )
+        await channel.send(embed=embed)
         active_questions["daily"] = None
 
 @daily_trivia_check.before_loop
@@ -413,7 +429,7 @@ async def info(interaction: discord.Interaction):
 
     embed.add_field(
         name="⏱️ Hourly Challenges",
-        value="Every hour, there's a 66% chance to spawn a Math or Anagram challenge. First correct guess wins **10 points**!",
+        value="Every hour, there's a 67% chance to spawn a Math or Anagram challenge. First correct guess wins **10 points**!",
         inline=False
     )
     embed.add_field(
