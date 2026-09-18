@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from datetime import time, datetime
 from zoneinfo import ZoneInfo
+from discord import app_commands
 
 import discord
 from discord.ext import commands, tasks
@@ -287,6 +288,12 @@ async def on_ready():
         monthly_reset_check.start()
 
 @bot.event
+async def setup_hook():
+    # Registers slash commands globally (can take a few minutes to show up across Discord)
+    await bot.tree.sync()
+    print("Synced slash commands!")
+
+@bot.event
 async def on_message(message):
     global active_questions, score_data
 
@@ -324,17 +331,18 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# Command to force-trigger a test question
-# Usage: #test (random), #test math, #test anagram, or #test trivia
-@bot.command()
-async def test(ctx, question_type: str = None):
+@bot.tree.command(name="test", description="Spawn a test quiz question")
+@app_commands.choices(question_type=[
+    app_commands.Choice(name="Math", value="math"),
+    app_commands.Choice(name="Anagram", value="anagram"),
+    app_commands.Choice(name="Trivia", value="trivia")
+])
+async def test(interaction: discord.Interaction, question_type: str = None):
     global active_questions
-    
-    # Normalize input
-    if question_type:
-        question_type = question_type.lower().strip()
 
-    # Determine question type
+    # 1. Acknowledge Discord immediately so it doesn't time out
+    await interaction.response.defer()
+
     if question_type == "trivia":
         embed, answer = await generate_trivia_question()
         points = 20
@@ -354,7 +362,6 @@ async def test(ctx, question_type: str = None):
         points = 10
         target_slot = "hourly"
     else:
-        # Pick randomly if no specific type (or an invalid type) is provided
         chosen_type = random.choice(["math", "anagram", "trivia"])
         if chosen_type == "trivia":
             embed, answer = await generate_trivia_question()
@@ -365,18 +372,25 @@ async def test(ctx, question_type: str = None):
             points = 10
             target_slot = "hourly"
 
-    # Save to the active dictionary and notify in chat
     active_questions[target_slot] = {"answer": str(answer).lower(), "points": points}
     
-    await ctx.send(f"🧪 **Test Question Spawned (Slot: `{target_slot}`, Points: `{points}`)**", embed=embed)
+    # 2. Use followup.send instead of ctx.send
+    await interaction.followup.send(
+        f"🧪 **Test Question Spawned (Slot: `{target_slot}`, Points: `{points}`)**", 
+        embed=embed
+    )
 
 # Command to check individual user points
-@bot.command()
-async def points(ctx):
+@bot.tree.command(name="points", description="Check your current quiz points")
+async def points(interaction: discord.Interaction):
     users = score_data["users"]
-    user_record = users.get(ctx.author.id, {"score": 0})
+    user_record = users.get(interaction.user.id, {"score": 0})
     score = user_record["score"] if isinstance(user_record, dict) else user_record
-    await ctx.send(f"{ctx.author.mention}, you currently have **{score}** points!")
+    
+    # Use interaction.response.send_message instead of ctx.send
+    await interaction.response.send_message(
+        f"{interaction.user.mention}, you currently have **{score}** points!"
+    )
 
 # ---------------------------------------------------------
 # Leaderboards
@@ -430,19 +444,20 @@ class LeaderboardView(discord.ui.View):
 
         await interaction.response.edit_message(embed=embed, view=self)
 
-@bot.command(aliases=["lb"])
-async def scoreboard(ctx):
+@bot.tree.command(name="leaderboard", description="View current season and monthly champion leaderboards")
+async def leaderboard(interaction: discord.Interaction):
     users = score_data["users"]
     if not users:
-        await ctx.send("📊 The leaderboard is currently empty!")
+        await interaction.response.send_message("📊 The leaderboard is currently empty!")
         return
 
     embed = discord.Embed(
-        title="📊 Quiz Leaderboards",
+        title="📊 QuizBot Leaderboards",
         description="Select an option below to view either the current month's points or past monthly wins!",
         color=discord.Color.blue()
     )
     view = LeaderboardView(users)
-    await ctx.send(embed=embed, view=view)
+    
+    await interaction.response.send_message(embed=embed, view=view)
 
 bot.run(TOKEN)
