@@ -34,7 +34,7 @@ SCORES_FILE = "scores.json"
 
 # Load recognizable 4-8 letter words for anagrams
 ANAGRAM_WORDS = [
-    w for w in top_n_list('en', 20000)
+    w for w in top_n_list('en', 10000)
     if 4 <= len(w) <= 10 and w.isalpha()
 ]
 
@@ -50,13 +50,17 @@ active_questions = {
 
 def load_scores():
     """Loads overall data structure from scores.json."""
-    default_data = {"last_reset_month": datetime.now(NZ_TZ).month, "users": {}}
+    default_data = {
+        "last_reset_month": datetime.now(NZ_TZ).month, 
+        "users": {},
+        "all_time_records": []  # List of dicts: [{"user_id": int, "name": str, "score": int, "month": str}]
+    }
     if os.path.exists(SCORES_FILE):
         try:
             with open(SCORES_FILE, "r") as f:
                 data = json.load(f)
-                # Convert JSON string keys back to integer Discord user IDs
                 data["users"] = {int(k): v for k, v in data.get("users", {}).items()}
+                data.setdefault("all_time_records", [])
                 return data
         except json.JSONDecodeError:
             return default_data
@@ -66,7 +70,8 @@ def save_scores():
     """Saves global score_data to scores.json."""
     data_to_save = {
         "last_reset_month": score_data.get("last_reset_month", datetime.now(NZ_TZ).month),
-        "users": {str(k): v for k, v in score_data["users"].items()}
+        "users": {str(k): v for k, v in score_data["users"].items()},
+        "all_time_records": score_data.get("all_time_records", [])
     }
     with open(SCORES_FILE, "w") as f:
         json.dump(data_to_save, f, indent=4)
@@ -103,38 +108,38 @@ def generate_arithmetic_question():
         return f"Solve: **{high} - {low}**", high - low
 
 def generate_anagram_question():
-    """Selects a word, shuffles its letters, and returns (prompt, original_word)."""
     word = random.choice(ANAGRAM_WORDS).lower()
     letters = list(word)
-
     scrambled = "".join(letters)
+    
+    # Keep shuffling until scrambled word differs from original
     while scrambled == word and len(word) > 1:
         random.shuffle(letters)
         scrambled = "".join(letters)
 
-    return f"Unscramble the word: **{scrambled.lower()}**", word
+    embed = discord.Embed(
+        title="🔤 Anagram Challenge",
+        description=f"Unscramble the word: **{scrambled.lower()}**\n\n*First person to answer correctly wins **10 points**!*",
+        color=discord.Color.purple()
+    )
+    
+    # Returns (embed, answer_string)
+    return embed, word
 
 def generate_question():
-    """Randomly chooses a question type and returns a styled discord.Embed and the answer string."""
     question_type = random.choice(["math", "anagram"])
     
     if question_type == "math":
         prompt, answer = generate_arithmetic_question()
-        title = "**Math Challenge**"
-        color = discord.Color.blue()
+        embed = discord.Embed(
+            title="🧮 Speed Math Challenge",
+            description=f"{prompt}\n\n*First person to answer correctly wins **10 points**!*",
+            color=discord.Color.blue()
+        )
+        return embed, str(answer).lower()
     else:
-        prompt, answer = generate_anagram_question()
-        title = "**Anagram Challenge**"
-        color = discord.Color.purple()
-
-    # Create the boxed window (Embed)
-    embed = discord.Embed(
-        title=title,
-        description=f"{prompt}\n\n*First person to answer correctly wins **10 points**!*",
-        color=color
-    )
-    
-    return embed, str(answer).lower()
+        # generate_anagram_question already returns (embed, answer)
+        return generate_anagram_question()
 
 async def generate_trivia_question():
     """Fetches a random trivia question from OpenTDB."""
@@ -177,30 +182,31 @@ async def hourly_question_check():
     if not channel:
         return
 
-    # Clear previous unanswered hourly question
-    if active_questions["hourly"] is not None:
-        active_questions["hourly"] = None
+    # Safety clear for any lingering hourly question
+    active_questions["hourly"] = None
 
-    # 67% chance to spawn a new hourly challenge (10 points)
-    if random.random() < 0.67:
+    # 75% chance to spawn a new hourly challenge (10 points)
+    if random.random() < 0.75:
+        # Removed 'await' since generate_question() is synchronous
         embed, answer = generate_question()
-        active_questions["hourly"] = {"answer": answer, "points": 10}
+        active_questions["hourly"] = {"answer": str(answer).lower(), "points": 10}
         await channel.send(embed=embed)
 
-    # Clear unanswered hourly question after 30 minutes
-    await asyncio.sleep(1800) 
+        # Wait 30 minutes before expiring
+        await asyncio.sleep(1800)
 
-    if active_questions["hourly"] is not None:
-        embed = discord.Embed(
-        title="⏰ Time's Up!",
-        description=(
-            f"Nobody guessed the hourly answer in time.\n\n"
-            f"The correct answer was: **{active_questions['hourly']['answer']}**"
-        ),
-        color=discord.Color.red()
-    )
-    await channel.send(embed=embed)
-    active_questions["hourly"] = None
+        # Only run timeout embed if the question remains unanswered
+        if active_questions["hourly"] is not None:
+            embed = discord.Embed(
+                title="⏰ Time's Up!",
+                description=(
+                    f"Nobody guessed the hourly answer in time.\n\n"
+                    f"The correct answer was: **{active_questions['hourly']['answer']}**"
+                ),
+                color=discord.Color.red()
+            )
+            await channel.send(embed=embed)
+            active_questions["hourly"] = None
 
 @hourly_question_check.before_loop
 async def before_hourly_check():
@@ -250,36 +256,50 @@ async def before_daily_check():
 # ---------------------------------------------------------
 @tasks.loop(hours=1)
 async def monthly_reset_check():
-    global score_data, user_scores
-    
+    global score_data
     now = datetime.now(NZ_TZ)
     current_month = now.month
     stored_month = score_data.get("last_reset_month", current_month)
 
-    # Trigger reset if a new month has arrived
     if current_month != stored_month:
         channel = bot.get_channel(CHANNEL_ID)
+        users = score_data["users"]
 
-        if user_scores:
-            # Find the top player with the highest current score
-            winner_id = max(user_scores, key=lambda u: user_scores[u].get("score", 0))
-            winner_data = user_scores[winner_id]
+        if users:
+            # 1. Crown the monthly winner
+            winner_id = max(users, key=lambda u: users[u].get("score", 0))
+            winner_data = users[winner_id]
 
             if winner_data.get("score", 0) > 0:
-                # Increment monthly wins counter
                 winner_data["monthly_wins"] = winner_data.get("monthly_wins", 0) + 1
-                
                 if channel:
                     await channel.send(
                         f"🎉 **MONTHLY RESET!** Congratulations to <@{winner_id}> for winning this month's leaderboard with "
                         f"**{winner_data['score']}** points! They have gained **+1 Monthly Win**! 👑"
                     )
 
-        # Reset all current season scores to 0
-        for uid in user_scores:
-            user_scores[uid]["score"] = 0
+            # 2. Update "Hall of Fame / Best of the Best" record list
+            records = score_data.get("all_time_records", [])
+            month_label = now.strftime("%b %Y")  # e.g., "Sep 2026"
 
-        # Update last reset month and save to file
+            for uid, udata in users.items():
+                pts = udata.get("score", 0)
+                if pts > 0:
+                    records.append({
+                        "user_id": uid,
+                        "name": udata.get("name", "Unknown"),
+                        "score": pts,
+                        "month": month_label
+                    })
+
+            # Sort all historical season scores descending and keep top 5
+            records.sort(key=lambda x: x["score"], reverse=True)
+            score_data["all_time_records"] = records[:5]
+
+        # 3. Reset all user scores for the new season
+        for uid in users:
+            users[uid]["score"] = 0
+
         score_data["last_reset_month"] = current_month
         save_scores()
 
@@ -429,7 +449,7 @@ async def info(interaction: discord.Interaction):
 
     embed.add_field(
         name="⏱️ Hourly Challenges",
-        value="Every hour, there's a 67% chance to spawn a Math or Anagram challenge. First correct guess wins **10 points**!",
+        value="Every hour, there's a 75% chance to spawn a Math or Anagram challenge. First correct guess wins **10 points**!",
         inline=False
     )
     embed.add_field(
@@ -450,67 +470,78 @@ async def info(interaction: discord.Interaction):
 # Leaderboards
 # ---------------------------------------------------------
 class LeaderboardView(discord.ui.View):
-    def __init__(self, user_scores):
+    def __init__(self, users, records):
         super().__init__(timeout=60)
-        self.user_scores = user_scores
+        self.users = users
+        self.records = records
 
     @discord.ui.select(
         placeholder="Choose a leaderboard to view...",
         options=[
             discord.SelectOption(label="Current Season Leaderboard", value="current", emoji="🏆"),
             discord.SelectOption(label="Monthly Champions Leaderboard", value="monthly", emoji="👑"),
+            discord.SelectOption(label="Best of the Best (Hall of Fame)", value="hall_of_fame", emoji="⭐"),
         ]
     )
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
         embed = discord.Embed(color=discord.Color.gold())
-        
+
         if select.values[0] == "current":
             embed.title = "🏆 Current Season Leaderboard"
             sorted_users = sorted(
-                self.user_scores.items(),
-                key=lambda x: x[1].get("score", 0),
+                self.users.items(),
+                key=lambda x: x[1].get("score", 0) if isinstance(x[1], dict) else x[1],
                 reverse=True
             )
             desc = ""
             for rank, (user_id, data) in enumerate(sorted_users, start=1):
-                pts = data.get("score", 0)
+                pts = data.get("score", 0) if isinstance(data, dict) else data
                 if pts > 0:
                     medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"**#{rank}**"
                     desc += f"{medal} <@{user_id}> — **{pts}** pts\n"
-            
             embed.description = desc if desc else "No points scored this month yet!"
 
-        else:
+        elif select.values[0] == "monthly":
             embed.title = "👑 Monthly Champions Leaderboard"
             sorted_users = sorted(
-                self.user_scores.items(),
-                key=lambda x: x[1].get("monthly_wins", 0),
+                self.users.items(),
+                key=lambda x: x[1].get("monthly_wins", 0) if isinstance(x[1], dict) else 0,
                 reverse=True
             )
             desc = ""
             for rank, (user_id, data) in enumerate(sorted_users, start=1):
-                wins = data.get("monthly_wins", 0)
+                wins = data.get("monthly_wins", 0) if isinstance(data, dict) else 0
                 if wins > 0:
                     medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"**#{rank}**"
                     desc += f"{medal} <@{user_id}> — **{wins}** monthly win(s)\n"
-            
             embed.description = desc if desc else "No monthly champions crowned yet!"
+
+        else:
+            embed.title = "⭐ Best of the Best (Top 5 All-Time Seasons)"
+            desc = ""
+            for rank, rec in enumerate(self.records, start=1):
+                medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"**#{rank}**"
+                desc += f"{medal} <@{rec['user_id']}> — **{rec['score']}** pts *({rec.get('month', 'Past Season')})*\n"
+            
+            embed.description = desc if desc else "No seasonal records recorded yet! Records compile at the end of each month."
 
         await interaction.response.edit_message(embed=embed, view=self)
 
-@bot.tree.command(name="leaderboard", description="View current season and monthly champion leaderboards")
+@bot.tree.command(name="leaderboard", description="View current season, monthly champions, and all-time record leaderboards")
 async def leaderboard(interaction: discord.Interaction):
     users = score_data["users"]
-    if not users:
+    records = score_data.get("all_time_records", [])
+
+    if not users and not records:
         await interaction.response.send_message("📊 The leaderboard is currently empty!")
         return
 
     embed = discord.Embed(
         title="📊 QuizBot Leaderboards",
-        description="Select an option below to view either the current month's points or past monthly wins!",
+        description="Select an option below to view current points, monthly wins, or all-time high scores!",
         color=discord.Color.blue()
     )
-    view = LeaderboardView(users)
+    view = LeaderboardView(users, records)
     
     await interaction.response.send_message(embed=embed, view=view)
 
