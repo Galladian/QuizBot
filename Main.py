@@ -185,7 +185,7 @@ def generate_quote_challenge():
     embed = discord.Embed(
         title="💬 Quote Challenge",
         description=f"""Who said this? Names: samuel, sam, mikram, jacob, 
-                        andrew, felix, lainie, eric, jonothan\n\n**{question}** **20 points**!*""",
+                        andrew, felix, lainie, eric, jonothan, satvik \n\n**"{question}"** for **20 points**!*""",
         color=discord.Color.gold()
     )
     return embed, answer
