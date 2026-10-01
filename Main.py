@@ -15,6 +15,7 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 import aiohttp
+import nltk
 from wordfreq import top_n_list
 
 # Load environment variables
@@ -32,14 +33,27 @@ CHANNEL_ID = 1523280307204128868
 NZ_TZ = ZoneInfo("Pacific/Auckland")
 SCORES_FILE = "scores.json"
 
+# Download the words dataset and part-of-speech tagger on boot
+nltk.download('words', quiet=True)
+nltk.download('maxent_ne_chunker', quiet=True)
+nltk.download('words', quiet=True)
+nltk.download('averaged_perceptron_tagger', quiet=True)
+
+from nltk.corpus import words as nltk_words
+VALID_DICTIONARY_WORDS = set(w.lower() for w in nltk_words.words())
+raw_words = top_n_list('en', 15000)
+
 # Load recognizable 4-8 letter words for anagrams
 ANAGRAM_WORDS = [
-    w for w in top_n_list('en', 10000)
-    if 4 <= len(w) <= 10 and w.isalpha()
+    w.lower() for w in raw_words
+    if 4 <= len(w) <= 10
+    and w.isalpha()
+    and w.lower() in VALID_DICTIONARY_WORDS 
 ]
 
 hourly_times = [time(hour=h, minute=0, tzinfo=NZ_TZ) for h in range(24)]
 daily_time = time(hour=9, minute=0, tzinfo=NZ_TZ)
+
 # ---------------------------------------------------------
 # Global State & Persistence
 # ---------------------------------------------------------
@@ -48,6 +62,7 @@ active_questions = {
     "daily": None
 }
 
+# Load and save scores 
 def load_scores():
     """Loads overall data structure from scores.json."""
     default_data = {
@@ -78,6 +93,22 @@ def save_scores():
 
 score_data = load_scores()
 
+# Load quotes on boot
+QUOTES_FILE = "quotes.json"
+
+def load_quotes():
+    """Loads custom quote challenges from quotes.json."""
+    if os.path.exists(QUOTES_FILE):
+        try:
+            with open(QUOTES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    return data
+        except json.JSONDecodeError:
+            print("⚠️ Error parsing quotes.json. Make sure it's valid JSON!")
+    return []
+
+QUOTES_DATA = load_quotes()
 # ---------------------------------------------------------
 # Question generation
 # ---------------------------------------------------------
@@ -141,29 +172,52 @@ def generate_question():
         # generate_anagram_question already returns (embed, answer)
         return generate_anagram_question()
 
+def generate_quote_challenge():
+    """Selects a random quote question from quotes.json."""
+    if not QUOTES_DATA:
+        # Fallback if quotes.json is missing or empty
+        return None, None
+
+    item = random.choice(QUOTES_DATA)
+    question = item["question"]
+    answer = str(item["answer"]).lower().strip()
+
+    embed = discord.Embed(
+        title="💬 Quote Challenge",
+        description=f"""Who said this? Names: samuel, sam, mikram, jacob, 
+                        andrew, felix, lainie, eric, jonothan\n\n**{question}** **20 points**!*""",
+        color=discord.Color.gold()
+    )
+    return embed, answer
+
 async def generate_trivia_question():
-    """Fetches a random trivia question from OpenTDB."""
-    url = "https://opentdb.com/api.php?amount=1&type=multiple"
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            if response.status == 200:
-                data = await response.json()
-                if data["results"]:
-                    item = data["results"][0]
-                    
-                    # Clean up HTML entities in text (e.g., &quot; -> ")
-                    question = html.unescape(item["question"])
-                    correct_answer = html.unescape(item["correct_answer"])
-                    category = html.unescape(item["category"])
+    # 50% chance to trigger a quote question if quotes exist
+    if QUOTES_DATA and random.random() < 0.5:
+        embed, answer = generate_quote_challenge()
+        if embed and answer:
+            return embed, answer
+        
+    url = "https://the-trivia-api.com/v2/questions?limit=1"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    item = data[0]
+                    question = item["question"]["text"]
+                    answer = item["correctAnswer"].lower().strip()
+                    category = item["category"]
 
                     embed = discord.Embed(
                         title=f"🌟 Daily Trivia Challenge ({category})",
                         description=f"**{question}**\n\n*First person to type the exact answer wins **20 points**!*",
                         color=discord.Color.gold()
                     )
-                    return embed, correct_answer.lower()
-                    
+                    return embed, answer
+    except Exception as e:
+        print(f"Error fetching trivia from The Trivia API: {e}")
+
+            
     # Fallback if API is unreachable
     embed = discord.Embed(
         title="🌟 Daily Trivia Challenge",
@@ -185,8 +239,8 @@ async def hourly_question_check():
     # Safety clear for any lingering hourly question
     active_questions["hourly"] = None
 
-    # 75% chance to spawn a new hourly challenge (10 points)
-    if random.random() < 0.75:
+    # 66% chance to spawn a new hourly challenge (10 points)
+    if random.random() < 0.66:
         # Removed 'await' since generate_question() is synchronous
         embed, answer = generate_question()
         active_questions["hourly"] = {"answer": str(answer).lower(), "points": 10}
@@ -449,7 +503,7 @@ async def info(interaction: discord.Interaction):
 
     embed.add_field(
         name="⏱️ Hourly Challenges",
-        value="Every hour, there's a 75% chance to spawn a Math or Anagram challenge. First correct guess wins **10 points**!",
+        value="Every hour, there's a 66% chance to spawn a Math or Anagram challenge. First correct guess wins **10 points**!",
         inline=False
     )
     embed.add_field(

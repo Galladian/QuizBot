@@ -1,20 +1,40 @@
 {
-    "last_reset_month": 9,
+    "last_reset_month": 10,
     "users": {
         "659236619815092227": {
             "name": "cookie5962",
-            "score": 50,
-            "monthly_wins": 0
+            "score": 40,
+            "monthly_wins": 1
         },
         "647969039519318043": {
             "name": "raticulararmy",
-            "score": 10,
+            "score": 0,
             "monthly_wins": 0
         },
         "758852720030646302": {
             "name": "zxcsv1242",
-            "score": 30,
+            "score": 0,
             "monthly_wins": 0
         }
-    }
+    },
+    "all_time_records": [
+        {
+            "user_id": 659236619815092227,
+            "name": "cookie5962",
+            "score": 600,
+            "month": "Oct 2026"
+        },
+        {
+            "user_id": 758852720030646302,
+            "name": "zxcsv1242",
+            "score": 290,
+            "month": "Oct 2026"
+        },
+        {
+            "user_id": 647969039519318043,
+            "name": "raticulararmy",
+            "score": 100,
+            "month": "Oct 2026"
+        }
+    ]
 }
