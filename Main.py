@@ -29,6 +29,10 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="/", intents=intents)
 
+# Check if persistent Fly.io mount directory exists, else fallback to current directory
+DATA_DIR = Path("/app/data") if Path("/app/data").exists() else Path(__file__).resolve().parent
+SCORES_FILE = DATA_DIR / "scores.json"
+
 CHANNEL_ID = 1523280307204128868
 NZ_TZ = ZoneInfo("Pacific/Auckland")
 SCORES_FILE = "scores.json"
@@ -51,7 +55,8 @@ ANAGRAM_WORDS = [
     and w.lower() in VALID_DICTIONARY_WORDS 
 ]
 
-hourly_times = [time(hour=h, minute=0, tzinfo=NZ_TZ) for h in range(24)]
+allowed_hours = [0] + list(range(6, 24))
+hourly_times = [time(hour=h, minute=0, tzinfo=NZ_TZ) for h in allowed_hours]
 daily_time = time(hour=9, minute=0, tzinfo=NZ_TZ)
 
 # ---------------------------------------------------------
@@ -184,15 +189,16 @@ def generate_quote_challenge():
 
     embed = discord.Embed(
         title="💬 Quote Challenge",
-        description=f"""Who said this? Names: samuel, sam, mikram, jacob, 
-                        andrew, felix, lainie, eric, jonothan, satvik \n\n**"{question}"** for **20 points**!*""",
+        description=f"""Who said this? 
+        Names: samuel, sam, mikram, jacob,andrew, felix, lainie, eric, jonothan, satvik 
+        \n**"{question}"** for **20 points**!*""",
         color=discord.Color.gold()
     )
     return embed, answer
 
 async def generate_trivia_question():
-    # 50% chance to trigger a quote question if quotes exist
-    if QUOTES_DATA and random.random() < 0.5:
+    # 75% chance to trigger a quote question if quotes exist
+    if QUOTES_DATA and random.random() < 0.75:
         embed, answer = generate_quote_challenge()
         if embed and answer:
             return embed, answer
